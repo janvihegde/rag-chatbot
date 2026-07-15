@@ -1,45 +1,24 @@
 """
-Document ingestion & retrieval (SRS Section: Functional Requirements ->
-3. Document Retrieval, and 11. Document Ingestion (Admin)).
-
-STEP 8 upgrade: real document ingestion. Docs can now come from:
-  - direct file upload (PDF / HTML / DOCX) via POST /api/admin/ingest
-  - an S3 path (s3://bucket/prefix), matching the SRS API example
-
-Each document is parsed to plain text (app/document_parsers.py), split into
-overlapping chunks (app/chunking.py), embedded (app/embeddings.py), and
-upserted into Qdrant -- one vector per CHUNK, not per whole document, so
-retrieval can return the specific paragraph that answers a question rather
-than an entire policy PDF.
-
-IMPORTANT -- why we re-embed everything on every ingest call:
-When MISTRAL_API_KEY is not set, app/embeddings.py falls back to TF-IDF.
-TF-IDF's vector space is defined by whatever corpus it was last fit on. If
-we naively called embed_documents() on only the *new* batch each time,
-every additional ingest call would silently invalidate every previously
-ingested vector (different vocabulary -> different vector space -> old
-stored vectors no longer comparable to a fresh query). To keep retrieval
-correct regardless of which embedder is active, we keep every chunk ever
-ingested in memory (_all_chunks) and do a full re-embed + re-upsert of the
-whole corpus on every ingest call. This is O(total chunks) per ingest,
-which is fine for a support KB (hundreds to low thousands of chunks) but
-would need a smarter incremental strategy at much larger scale. This
-becomes a non-issue once this fully switches to Mistral embeddings, since
-those don't require refitting.
+Document ingestion & retrieval using LlamaIndex and BGE-M3.
+(SRS Section: Functional Requirements -> 3 & 11)
 """
 from urllib.parse import urlparse
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from llama_index.core import VectorStoreIndex, Settings
+from llama_index.core.schema import TextNode
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+from llama_index.core.storage.storage_context import StorageContext
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-from app.embeddings import embed_documents, embed_query
-from app.document_parsers import parse_file
-from app.chunking import chunk_text
+from app.document_parsers import parse_file 
+from app.chunking import chunk_text 
 
 COLLECTION_NAME = "company_docs"
 
-# Bootstrap/demo content -- used only if retrieve() is called before any
-# real ingestion has happened (e.g. fresh local dev environment).
+# Change from "BAAI/bge-m3" to the lightweight English model
+Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+# Bootstrap/demo content
 SAMPLE_DOCS = [
     {
         "id": "refund-policy.pdf",
@@ -79,85 +58,43 @@ SAMPLE_DOCS = [
     },
 ]
 
-# Every chunk ever ingested, so the TF-IDF fallback can be consistently
-# re-fit on the full corpus each time (see module docstring).
-# Each item: {"source": str, "text": str}
-_all_chunks: list[dict] = []
-
-_vector_size = None  # set once the first embed happens
-
-# ":memory:" -> pure in-memory Qdrant, no server/Docker required.
+# Initialize Qdrant and LlamaIndex Vector Store
 _client = QdrantClient(":memory:")
+_vector_store = QdrantVectorStore(client=_client, collection_name=COLLECTION_NAME)
+_storage_context = StorageContext.from_defaults(vector_store=_vector_store)
 
-
-def _recreate_collection(vector_size: int):
-    if _client.collection_exists(COLLECTION_NAME):
-        _client.delete_collection(COLLECTION_NAME)
-    _client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
-    )
-
-
-def _reindex_all():
-    """Re-embed and re-upsert every chunk ever ingested. See module docstring."""
-    global _vector_size
-    if not _all_chunks:
-        return
-
-    texts = [c["text"] for c in _all_chunks]
-    vectors = embed_documents(texts)
-    _vector_size = len(vectors[0])
-
-    _recreate_collection(_vector_size)
-
-    points = [
-        PointStruct(
-            id=i,
-            vector=vectors[i],
-            payload={
-                "source": _all_chunks[i]["source"],
-                "text": _all_chunks[i]["text"],
-            },
-        )
-        for i in range(len(_all_chunks))
-    ]
-    _client.upsert(collection_name=COLLECTION_NAME, points=points)
-
+# Create an empty index (LlamaIndex handles embedding the nodes dynamically)
+_index = VectorStoreIndex(
+    nodes=[], 
+    storage_context=_storage_context
+)
 
 def _add_documents(docs: list[dict]) -> int:
-    """
-    Chunk + register a batch of {"id": source_name, "text": full_text} docs,
-    then reindex the whole corpus. Returns the number of chunks added.
-    """
+    """Chunk + register a batch of docs directly into the index."""
     added = 0
+    nodes = []
+    
     for doc in docs:
         for chunk in chunk_text(doc["text"]):
-            _all_chunks.append({"source": doc["id"], "text": chunk})
+            node = TextNode(
+                text=chunk,
+                metadata={"source": doc["id"]}
+            )
+            nodes.append(node)
             added += 1
-    _reindex_all()
+            
+    if nodes:
+        _index.insert_nodes(nodes)
+        
     return added
-
 
 def ingest_documents(docs=None) -> int:
     """Bootstrap/demo path -- ingests SAMPLE_DOCS unless other docs given."""
     docs = docs if docs is not None else SAMPLE_DOCS
     return _add_documents(docs)
 
-
 def ingest_files(files: list[tuple[str, bytes]]) -> dict:
-    """
-    Ingest uploaded files.
-
-    `files` is a list of (filename, raw_bytes) pairs -- kept as plain tuples
-    rather than FastAPI's UploadFile so this function has no web-framework
-    dependency and is easy to unit test / call from a script.
-
-    Returns {"documents": N, "chunks": M, "sources": [filenames]}.
-    Files with unsupported extensions raise ValueError from parse_file();
-    the caller (the API route) is responsible for turning that into an
-    HTTP error response.
-    """
+    """Ingest uploaded files."""
     docs = []
     for filename, content in files:
         text = parse_file(filename, content)
@@ -171,17 +108,8 @@ def ingest_files(files: list[tuple[str, bytes]]) -> dict:
         "sources": [d["id"] for d in docs],
     }
 
-
 def ingest_from_s3(s3_path: str) -> dict:
-    """
-    Ingest every object under an s3://bucket/prefix path, per the SRS
-    example (POST /api/admin/ingest {"source": "s3://company-docs/policies/"}).
-
-    Uses boto3's default credential chain (env vars / instance role /
-    ~/.aws/config) -- no credentials are handled in this code. boto3 is
-    imported lazily so it isn't a hard dependency for deployments that only
-    ever use direct file-upload ingestion.
-    """
+    """Ingest every object under an s3://bucket/prefix path."""
     import boto3
 
     parsed = urlparse(s3_path)
@@ -196,7 +124,7 @@ def ingest_from_s3(s3_path: str) -> dict:
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
-            if key.endswith("/"):  # skip "folder" placeholder objects
+            if key.endswith("/"): 
                 continue
             body = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
             files.append((key, body))
@@ -206,21 +134,24 @@ def ingest_from_s3(s3_path: str) -> dict:
 
     return ingest_files(files)
 
-
 def retrieve(query: str, top_k: int = 20):
-    """Returns list of {"source", "text", "score"} ordered by score desc."""
-    if _vector_size is None:
-        ingest_documents()  # bootstrap with SAMPLE_DOCS if nothing ingested yet
+    """Retrieves chunks using LlamaIndex, mapping back to the expected dict format."""
+    
+    # Lazy load sample docs if the index is empty
+    if not _client.collection_exists(COLLECTION_NAME) or _client.get_collection(COLLECTION_NAME).points_count == 0:
+        ingest_documents() 
 
-    query_vector = embed_query(query)
+    # We now use the LlamaIndex query engine/retriever natively
+    retriever = _index.as_retriever(similarity_top_k=top_k)
+    query_result = retriever.retrieve(query)
 
-    hits = _client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        limit=top_k,
-    ).points
-
-    return [
-        {"source": hit.payload["source"], "text": hit.payload["text"], "score": hit.score}
-        for hit in hits
-    ]
+    # Reconstruct the output shape expected by relevance_gate.py
+    results = []
+    for node in query_result:
+        results.append({
+            "source": node.metadata["source"], 
+            "text": node.text, 
+            "score": node.score
+        })
+            
+    return results

@@ -13,3 +13,6 @@ beautifulsoup4
 python-docx
 boto3
 python-multipart
+llama-index>=0.10.0
+llama-index-vector-stores-qdrant>=0.1.0
+llama-index-embeddings-huggingface>=0.2.0
