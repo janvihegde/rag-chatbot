@@ -8,3 +8,8 @@ scikit-learn
 sentence-transformers
 mistralai
 python-dotenv
+pypdf
+beautifulsoup4
+python-docx
+boto3
+python-multipart
