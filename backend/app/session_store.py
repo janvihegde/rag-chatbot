@@ -1,44 +1,37 @@
-"""
-Session / chat history store
-(SRS Section: Functional Requirements -> 1. Chat Interface,
- Non-Functional -> Data persistence for conversation history).
-
-STEP 7 of the build: in-memory store (a plain dict), since there's no
-database configured yet. This means history is lost on server restart --
-acceptable for local development. Swap `_sessions` for a real DB
-(Postgres, Redis, etc.) later; every other file only calls the four
-functions below, so nothing else needs to change when that happens.
-"""
+# backend/app/session_store.py
 from datetime import datetime, timezone
+from app.db import db
 
-# session_id -> list of {"role": "user"|"assistant", "content": str, "timestamp": str}
-_sessions: dict[str, list[dict]] = {}
-
-# How many most-recent turns to feed back into generation as context.
-# Kept small on purpose: more history = more prompt tokens = slower/costlier
-# calls, and most support questions don't need deep history anyway.
 MAX_HISTORY_TURNS = 6
 
-
 def get_history(session_id: str) -> list[dict]:
-    """Full history for a session, oldest first. Empty list if unseen."""
-    return _sessions.get(session_id, [])
-
+    """Fetch full history for a session from MongoDB."""
+    # Find all messages for this session, sorted by timestamp ascending
+    cursor = db.messages.find({"session_id": session_id}).sort("timestamp", 1)
+    
+    # Strip the MongoDB _id and session_id before returning to the graph
+    history = []
+    for doc in cursor:
+        history.append({
+            "role": doc["role"],
+            "content": doc["content"],
+            "timestamp": doc["timestamp"]
+        })
+    return history
 
 def get_recent_history(session_id: str, max_turns: int = MAX_HISTORY_TURNS) -> list[dict]:
-    """Most recent `max_turns` messages (user+assistant combined), oldest first."""
+    """Most recent `max_turns` messages."""
     return get_history(session_id)[-max_turns:]
 
-
 def append_message(session_id: str, role: str, content: str) -> None:
-    _sessions.setdefault(session_id, []).append(
-        {
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-
+    """Insert a new message into MongoDB."""
+    db.messages.insert_one({
+        "session_id": session_id,
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
 
 def clear_session(session_id: str) -> None:
-    _sessions.pop(session_id, None)
+    """Delete a session's history."""
+    db.messages.delete_many({"session_id": session_id})

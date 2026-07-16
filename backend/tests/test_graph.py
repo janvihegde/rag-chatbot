@@ -71,18 +71,13 @@ class TestEscalationPath:
         # Retrieval returns chunks, but nothing scoring high enough to
         # pass the relevance gate.
         monkeypatch.setattr(
-            "app.retrieval.retrieve",
-            lambda query, top_k=20: [
-                {"source": "unrelated.pdf", "text": "irrelevant content", "score": 0.01}
-            ],
-        )
-        emails_sent = []
-        monkeypatch.setattr(
-            "app.escalation._send_escalation_email",
+            "app.escalation._log_escalation",
             lambda session_id, message, relevance_score: emails_sent.append(
                 (session_id, message, relevance_score)
             ),
         )
+        emails_sent = []
+        
 
         result = _run("How do I fix a billing error on my account?")
 
@@ -95,7 +90,7 @@ class TestEscalationPath:
 
     def test_empty_retrieval_also_escalates(self, monkeypatch):
         monkeypatch.setattr("app.retrieval.retrieve", lambda query, top_k=20: [])
-        monkeypatch.setattr("app.escalation._send_escalation_email", lambda **k: None)
+        monkeypatch.setattr("app.escalation._log_escalation", lambda **k: None)
 
         result = _run("How do I update my billing address?")
 
@@ -142,7 +137,7 @@ class TestGenerationPath:
         )
         email_calls = []
         monkeypatch.setattr(
-            "app.escalation._send_escalation_email",
+            "app.escalation._log_escalation",
             lambda **k: email_calls.append(k),
         )
 

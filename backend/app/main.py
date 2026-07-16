@@ -35,6 +35,8 @@ from pydantic import BaseModel
 from app.graph import compiled_graph
 from app.session_store import get_history, get_recent_history, append_message
 from app.ingest import ingest_files, ingest_from_s3
+from fastapi import Depends
+from app.auth import verify_admin
 
 app = FastAPI(title="RAG Customer Support Chatbot", version="0.1.0")
 
@@ -108,20 +110,14 @@ def chat_history(session_id: str):
     return {"session_id": session_id, "history": get_history(session_id)}
 
 
-@app.post("/api/admin/ingest")
+@app.post("/api/admin/ingest", dependencies=[Depends(verify_admin)])
 async def admin_ingest(
     files: Optional[List[UploadFile]] = File(default=None),
     source: Optional[str] = Form(default=None),
 ):
     """
     Document Ingestion (SRS Section: Functional Requirements -> 11).
-
-    Provide exactly one of:
-      - `files`: one or more uploaded PDF/HTML/DOCX files (multipart)
-      - `source`: an S3 path, e.g. "s3://company-docs/policies/"
-
-    Returns a summary of what was ingested: document count, chunk count,
-    and the list of source filenames/keys.
+    Secured via admin token authentication.
     """
     if not files and not source:
         raise HTTPException(400, "Provide either 'files' or a 'source' S3 path.")
@@ -137,4 +133,48 @@ async def admin_ingest(
             file_bytes = [(f.filename, await f.read()) for f in files]
             result = ingest_files(file_bytes)
     except ValueError as e:
-        raise
+        raise HTTPException(400, str(e))
+
+    return {"status": "ok", **result}
+
+
+# Add these endpoints to your backend/app/main.py
+
+@app.get("/api/admin/escalations", dependencies=[Depends(verify_admin)])
+def get_escalations(status: Optional[str] = "pending"):
+    """
+    Returns a list of escalations. 
+    Can be filtered by status (pending vs resolved).
+    """
+    query = {"status": status} if status else {}
+    # Sort newest first
+    cursor = db.escalations.find(query).sort("timestamp", -1).limit(100)
+    
+    results = []
+    for doc in cursor:
+        doc["_id"] = str(doc["_id"]) # Convert ObjectId to string for JSON serialization
+        results.append(doc)
+        
+    return {"escalations": results}
+
+@app.get("/api/admin/analytics", dependencies=[Depends(verify_admin)])
+def get_analytics():
+    """
+    Aggregates database metrics for the React Admin Dashboard (e.g., Recharts).
+    """
+    total_messages = db.messages.count_documents({})
+    total_escalations = db.escalations.count_documents({})
+    pending_escalations = db.escalations.count_documents({"status": "pending"})
+    
+    # Calculate global escalation rate
+    user_queries = db.messages.count_documents({"role": "user"})
+    escalation_rate = (total_escalations / user_queries * 100) if user_queries > 0 else 0
+
+    return {
+        "metrics": {
+            "total_user_queries": user_queries,
+            "total_escalations": total_escalations,
+            "pending_escalations": pending_escalations,
+            "escalation_rate_percent": round(escalation_rate, 2)
+        }
+    }

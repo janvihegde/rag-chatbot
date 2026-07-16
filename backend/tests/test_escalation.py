@@ -18,7 +18,7 @@ def test_escalation_node_sets_expected_state(monkeypatch):
         sent["message"] = message
         sent["relevance_score"] = relevance_score
 
-    monkeypatch.setattr("app.escalation._send_escalation_email", _fake_send)
+    monkeypatch.setattr("app.escalation._log_escalation", _fake_send)
 
     state = {
         "session_id": "sess_123",
@@ -39,7 +39,7 @@ def test_escalation_node_sets_expected_state(monkeypatch):
 def test_escalation_node_defaults_missing_relevance_score(monkeypatch):
     sent = {}
     monkeypatch.setattr(
-        "app.escalation._send_escalation_email",
+        "app.escalation._log_escalation",
         lambda session_id, message, relevance_score: sent.update(
             relevance_score=relevance_score
         ),

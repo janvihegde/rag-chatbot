@@ -1,29 +1,25 @@
-"""
-Human Escalation (SRS Section: Functional Requirements -> 8. Human Escalation).
-
-STEP 4 of the build: stubbed email (prints instead of sending via AWS SES,
-since no AWS account/keys exist yet). Swap `_send_escalation_email`'s body
-for a real boto3 SES call later -- the node and graph wiring won't change.
-
-Per the SRS: "Escalation only fires from the no-context path, never from
-the off-topic/reject path" -- this node is only reachable when the
-relevance gate fails, never from scope_reject.
-"""
+# backend/app/escalation.py
+from datetime import datetime, timezone
 from app.graph_state import ChatState
+from app.db import db
 
-
-def _send_escalation_email(session_id: str, message: str, relevance_score: float):
+def _log_escalation(session_id: str, message: str, relevance_score: float):
     """
-    STUB: replace with real AWS SES send_email call once AWS creds exist.
+    Saves the escalation to the database for the Admin Dashboard.
     """
-    print(
-        f"[ESCALATION EMAIL - STUB] session_id={session_id} "
-        f"relevance_score={relevance_score:.3f} query={message!r}"
-    )
-
+    db.escalations.insert_one({
+        "session_id": session_id,
+        "user_message": message,
+        "relevance_score": relevance_score,
+        "status": "pending",  # Can be updated to 'resolved' by an admin later
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    
+    # You can keep the print statement as a placeholder for AWS SES
+    print(f"[ESCALATION LOGGED] session_id={session_id}, query={message!r}")
 
 def escalation_node(state: ChatState) -> ChatState:
-    _send_escalation_email(
+    _log_escalation(
         session_id=state["session_id"],
         message=state["message"],
         relevance_score=state.get("relevance_score", 0.0),
