@@ -29,8 +29,9 @@ from app.relevance_gate import RERANK_GATE_THRESHOLD
 _SYSTEM_PROMPT = (
     "You are a customer support assistant. Answer the user's question using "
     "ONLY the provided context below. If the context does not fully answer "
-    "the question, say so -- do not invent information. Cite the source "
-    "document(s) you used."
+    "the question, say so -- do not invent information. Do not add your own "
+    "source citations or a 'Source:' line -- citations are appended "
+    "automatically after your answer, so just answer the question directly."
 )
 
 

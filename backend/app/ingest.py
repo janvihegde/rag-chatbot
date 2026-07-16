@@ -1,7 +1,19 @@
 """
 Document ingestion & retrieval using LlamaIndex and BGE-M3.
 (SRS Section: Functional Requirements -> 3 & 11)
+
+Storage: QDRANT_URL env var picked up if set (point this at a real Qdrant
+server/cluster for production); otherwise falls back to an on-disk local
+Qdrant store at QDRANT_PATH (default ./qdrant_storage) so ingested docs
+survive server restarts without needing a Qdrant server running at all.
+Previously this used QdrantClient(":memory:"), which silently threw away
+every ingested document on restart -- that's fixed by this change.
+
+NOTE: on-disk local mode (no QDRANT_URL) holds an exclusive file lock, so
+only one process can have it open at a time -- fine for a single API
+process, but don't point two uvicorn workers at the same QDRANT_PATH.
 """
+import os
 from urllib.parse import urlparse
 
 from qdrant_client import QdrantClient
@@ -16,8 +28,14 @@ from app.chunking import chunk_text
 
 COLLECTION_NAME = "company_docs"
 
-# Change from "BAAI/bge-m3" to the lightweight English model
-Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+EMBED_MODEL_NAME = "BAAI/bge-m3"
+QDRANT_URL = os.environ.get("QDRANT_URL")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
+QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
+
+# BGE-M3 (1024-dim), per the SRS. Loaded once at import time and cached
+# locally by HuggingFace after the first run (~2GB download).
+Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
 # Bootstrap/demo content
 SAMPLE_DOCS = [
     {
@@ -58,8 +76,14 @@ SAMPLE_DOCS = [
     },
 ]
 
-# Initialize Qdrant and LlamaIndex Vector Store
-_client = QdrantClient(":memory:")
+# Initialize Qdrant and LlamaIndex Vector Store.
+# Remote server (production) if QDRANT_URL is set; otherwise persistent
+# on-disk local storage so data survives restarts in dev/single-instance
+# deployments without requiring a Qdrant server at all.
+if QDRANT_URL:
+    _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+else:
+    _client = QdrantClient(path=QDRANT_PATH)
 _vector_store = QdrantVectorStore(client=_client, collection_name=COLLECTION_NAME)
 _storage_context = StorageContext.from_defaults(vector_store=_vector_store)
 

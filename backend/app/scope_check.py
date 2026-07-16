@@ -47,6 +47,15 @@ _IN_SCOPE_KEYWORDS = [
     "product", "policy", "return", "warranty", "support", "help",
     "error", "issue", "problem", "not working", "how do i", "how to",
     "upgrade", "downgrade", "plan", "pricing", "charge", "renew",
+    # Truelift-domain terms (from the ingested knowledge base docs) --
+    # add more here as new docs get ingested and real user questions
+    # about them get rejected as off_topic.
+    "truelift", "incrementality", "attribution", "measurement",
+    "marketing mix", "geo-test", "geo-lift", "synthetic control",
+    "media spend", "ad spend", "roas", "return on ad spend",
+    "budget recommender", "scenario planner", "halo", "cross-channel",
+    "omnichannel", "dashboard", "onboarding", "demo", "contact",
+    "advisory", "campaign", "feature", "email", "reach out",
 ]
 
 _injection_re = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
