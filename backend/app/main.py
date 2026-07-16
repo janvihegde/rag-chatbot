@@ -3,7 +3,7 @@ FastAPI entrypoint.
 
 Implements API endpoints from the SRS (Section: Functional Requirements):
 
-    POST /api/chat                     -- 1. Chat Interface
+    POST /api/chat                     -- 1. Chat Interface (Streaming via SSE)
     GET  /api/chat/{session_id}/history -- 10. Conversation History
     POST /api/admin/ingest             -- 11. Document Ingestion (Admin)
 
@@ -22,12 +22,14 @@ NOTE on auth: this endpoint has NO auth/role check yet. SRS Section:
 Security -> Permissions -> Admin requires this to be admin-only. Do not
 expose this route publicly until that's added -- tracked as a follow-up.
 """
+import json
 from dotenv import load_dotenv
 load_dotenv()  # reads .env in the project root and sets env vars from it
 
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.graph import compiled_graph
@@ -42,6 +44,8 @@ class ChatRequest(BaseModel):
     message: str
 
 
+# Note: ChatResponse is kept for reference or if you need a standard fallback endpoint,
+# but the streaming endpoint yields dicts directly instead of a Pydantic model.
 class ChatResponse(BaseModel):
     session_id: str
     response: str
@@ -56,27 +60,47 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+@app.post("/api/chat")
+async def chat_stream(req: ChatRequest):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    Yields intermediate node updates, followed by the final result.
+    """
     history = get_recent_history(req.session_id)
 
-    result = compiled_graph.invoke(
-        {"session_id": req.session_id, "message": req.message, "history": history}
-    )
+    async def event_generator():
+        final_state = {}
+        
+        # compiled_graph.stream yields state updates as each node finishes
+        for update in compiled_graph.stream(
+            {"session_id": req.session_id, "message": req.message, "history": history},
+            stream_mode="updates"
+        ):
+            for node_name, node_state in update.items():
+                final_state.update(node_state)
+                
+                # Yield an event notifying the frontend which node just completed
+                yield f"data: {json.dumps({'event': 'node_update', 'node': node_name})}\n\n"
 
-    # Persist this turn AFTER the graph runs, so the message the user just
-    # sent doesn't leak into its own "prior history" during this same call.
-    append_message(req.session_id, "user", req.message)
-    append_message(req.session_id, "assistant", result.get("response_text", ""))
+        # Once the graph has fully traversed, prepare the final payload
+        response_payload = {
+            "event": "final_result",
+            "session_id": req.session_id,
+            "response": final_state.get("response_text", ""),
+            "citations": final_state.get("citations", []),
+            "escalated": final_state.get("escalated", False),
+            "debug_scope_label": final_state.get("scope_label"),
+            "debug_relevance_score": final_state.get("relevance_score"),
+        }
 
-    return ChatResponse(
-        session_id=req.session_id,
-        response=result.get("response_text", ""),
-        citations=result.get("citations", []),
-        escalated=result.get("escalated", False),
-        debug_scope_label=result.get("scope_label"),
-        debug_relevance_score=result.get("relevance_score"),
-    )
+        # Persist this turn AFTER the graph runs
+        append_message(req.session_id, "user", req.message)
+        append_message(req.session_id, "assistant", final_state.get("response_text", ""))
+
+        yield f"data: {json.dumps(response_payload)}\n\n"
+
+    # Return the generator wrapped in a StreamingResponse with the standard SSE media type
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/api/chat/{session_id}/history")
@@ -113,8 +137,4 @@ async def admin_ingest(
             file_bytes = [(f.filename, await f.read()) for f in files]
             result = ingest_files(file_bytes)
     except ValueError as e:
-        # Unsupported file type, empty S3 prefix, malformed path, etc. --
-        # these are client errors (400), not server failures (500).
-        raise HTTPException(400, str(e))
-
-    return {"status": "ok", **result}
+        raise
