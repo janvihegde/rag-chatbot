@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   qdrant:
     image: qdrant/qdrant:latest
@@ -10,6 +8,14 @@ services:
       - qdrant_storage:/qdrant/storage   # persists across `docker compose down` / restarts
     restart: unless-stopped
 
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"   # exposed for local debugging (e.g. MongoDB Compass); remove if you don't need host access
+    volumes:
+      - mongo_storage:/data/db   # persists conversation history & escalations across restarts
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
@@ -17,10 +23,17 @@ services:
       - "8000:8000"
     environment:
       - QDRANT_URL=http://qdrant:6333
+      - MONGO_URI=mongodb://mongo:27017
       - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
+    volumes:
+      - hf_cache:/root/.cache/huggingface   # persists the ~2GB BGE-M3 download across rebuilds
     depends_on:
       - qdrant
+      - mongo
     restart: unless-stopped
 
 volumes:
   qdrant_storage:
+  mongo_storage:
+  hf_cache:

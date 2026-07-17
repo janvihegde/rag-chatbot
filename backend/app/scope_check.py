@@ -61,13 +61,18 @@ _IN_SCOPE_KEYWORDS = [
 _injection_re = re.compile("|".join(_INJECTION_PATTERNS), re.IGNORECASE)
 
 _SCOPE_SYSTEM_PROMPT = (
-    "You classify customer support chat messages. Reply with EXACTLY one "
-    "word: 'in_scope' if the message is plausibly a question about a "
-    "company's product, account, billing, subscriptions, orders, shipping, "
-    "security/2FA, data export, technical issues, or general support. "
-    "Reply 'off_topic' if the message is unrelated to customer support "
-    "(e.g. general knowledge questions, small talk, or topics no support "
-    "bot would handle). Reply with only the single word, nothing else."
+    "You classify chat messages sent to Truelift's support and product "
+    "assistant. Truelift is a marketing intelligence and ad-incrementality "
+    "measurement platform for consumer brands. Reply with EXACTLY one word: "
+    "'in_scope' if the message is plausibly something Truelift's assistant "
+    "should answer -- this includes account/billing/subscription/order "
+    "questions, technical/support issues, AND any question about Truelift "
+    "itself: what it does, its features, pricing, onboarding, how to "
+    "contact the company, request a demo, or reach the team. Reply "
+    "'off_topic' only for messages clearly unrelated to Truelift or "
+    "customer support (e.g. general knowledge questions, small talk, "
+    "topics about unrelated companies/products). Reply with only the "
+    "single word, nothing else."
 )
 
 

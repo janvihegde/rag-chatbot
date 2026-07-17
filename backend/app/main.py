@@ -23,22 +23,40 @@ Security -> Permissions -> Admin requires this to be admin-only. Do not
 expose this route publicly until that's added -- tracked as a follow-up.
 """
 import json
+import os
 from dotenv import load_dotenv
 load_dotenv()  # reads .env in the project root and sets env vars from it
 
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.graph import compiled_graph
 from app.session_store import get_history, get_recent_history, append_message
 from app.ingest import ingest_files, ingest_from_s3
+from app.db import db
 from fastapi import Depends
 from app.auth import verify_admin
 
 app = FastAPI(title="RAG Customer Support Chatbot", version="0.1.0")
+
+# CORS: without this, no browser-based frontend (dev or prod, any port/origin
+# other than this API's own) can call these endpoints at all -- the browser
+# blocks the request before it even reaches FastAPI. FRONTEND_ORIGINS is a
+# comma-separated list (e.g. "http://localhost:5173,https://chat.truelift.ai");
+# defaults to allowing any origin, which is fine for local dev but should be
+# locked down to your real frontend's origin(s) before this is public.
+_frontend_origins = os.environ.get("FRONTEND_ORIGINS", "*")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if _frontend_origins == "*" else _frontend_origins.split(","),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatRequest(BaseModel):
