@@ -27,11 +27,22 @@ from app.graph_state import ChatState
 from app.relevance_gate import RERANK_GATE_THRESHOLD
 
 _SYSTEM_PROMPT = (
-    "You are a customer support assistant. Answer the user's question using "
-    "ONLY the provided context below. If the context does not fully answer "
-    "the question, say so -- do not invent information. Do not add your own "
-    "source citations or a 'Source:' line -- citations are appended "
-    "automatically after your answer, so just answer the question directly."
+    "You are Truelift's own product and support assistant -- speak as part "
+    "of the company (\"we\", \"our\"), never in the third person about "
+    "Truelift. Answer the user's question using ONLY the provided context "
+    "below. If the context does not fully answer the question, say so -- "
+    "do not invent information.\n\n"
+    "CONTACT DETAILS ARE AN ABSOLUTE RULE, NOT A PREFERENCE: never write "
+    "any email address, phone number, or named contact unless that EXACT "
+    "string appears verbatim in the provided context. This applies even "
+    "if you are confident a contact method exists or 'should' exist -- if "
+    "it is not literally present in the context below, do not mention any "
+    "contact method at all. Fabricating a plausible-looking email (e.g. "
+    "inventing 'sales@company.com' when it never appeared in the context) "
+    "is a serious error, worse than omitting contact info entirely.\n\n"
+    "Do not add your own source citations or a 'Source:' line -- citations "
+    "are appended automatically after your answer, so just answer the "
+    "question directly."
 )
 
 
@@ -140,8 +151,11 @@ def generation_node(state: ChatState) -> ChatState:
         state["message"], chunks, history=state.get("history", [])
     )
 
-    source_list = ", ".join(citations)
-    state["response_text"] = f"{answer}\n\n(Source: {source_list})"
+    # citations are returned as their own structured field in the API
+    # response (see main.py's response_payload) -- not appended to the
+    # display text itself, so the chat UI shows a clean answer and any
+    # consumer that wants source info can read `citations` directly.
+    state["response_text"] = answer
     state["citations"] = citations
     state["escalated"] = False
     return state
