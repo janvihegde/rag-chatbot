@@ -13,32 +13,22 @@ function getOrCreateSessionId() {
   return id;
 }
 
-function ConfidenceChip({ score, source }) {
-  const pct = Math.round((score ?? 0) * 100);
-  const filledTicks = Math.round((score ?? 0) * 5);
-  return (
-    <div className="confidence-chip">
-      <span>{pct}% match</span>
-      <div className="ticks" aria-hidden="true">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <span key={i} className={`tick${i < filledTicks ? " filled" : ""}`} />
-        ))}
-      </div>
-      {source && (
-        <>
-          <span className="divider">·</span>
-          <span className="source">{source}</span>
-        </>
-      )}
-    </div>
-  );
+// The backend appends a trailing "(Source: ..., ...)" line to grounded
+// answers (see backend/app/generation.py). We keep that data available in
+// payload.citations for potential future use, but don't want it rendered
+// inline in the chat bubble -- strip it here rather than changing what the
+// backend sends, so citations remain available to any other UI that wants
+// them later.
+function stripSourceLine(text) {
+  if (!text) return text;
+  return text.replace(/\n*\(Source:[^)]*\)\s*$/i, "").trim();
 }
 
 function MessageBubble({ msg }) {
   const isUser = msg.role === "user";
   const isEscalated = !isUser && msg.escalated;
   const isRejected = !isUser && (msg.scopeLabel === "off_topic" || msg.scopeLabel === "injection");
-  const hasConfidence = !isUser && !isEscalated && !isRejected && msg.citations?.length > 0;
+  const displayContent = isUser ? msg.content : stripSourceLine(msg.content);
 
   return (
     <div className={`msg-row ${isUser ? "user" : "assistant"}`}>
@@ -51,15 +41,12 @@ function MessageBubble({ msg }) {
             isRejected ? "rejected" : "",
           ].join(" ").trim()}
         >
-          {msg.content}
+          {displayContent}
         </div>
         {isEscalated && (
           <div className="escalate-tag">
             <span>↗</span> Escalated to the team
           </div>
-        )}
-        {hasConfidence && (
-          <ConfidenceChip score={msg.relevanceScore} source={msg.citations[0]} />
         )}
       </div>
     </div>

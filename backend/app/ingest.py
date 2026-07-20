@@ -15,7 +15,7 @@ process, but don't point two uvicorn workers at the same QDRANT_PATH.
 """
 import os
 from urllib.parse import urlparse
-
+   
 from qdrant_client import QdrantClient
 from llama_index.core import VectorStoreIndex, Settings
 from llama_index.core.schema import TextNode
@@ -36,45 +36,11 @@ QDRANT_PATH = os.environ.get("QDRANT_PATH", "./qdrant_storage")
 # BGE-M3 (1024-dim), per the SRS. Loaded once at import time and cached
 # locally by HuggingFace after the first run (~2GB download).
 Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
-# Bootstrap/demo content
-SAMPLE_DOCS = [
-    {
-        "id": "refund-policy.pdf",
-        "text": (
-            "Annual subscriptions can be refunded within 30 days of purchase. "
-            "Monthly subscriptions are non-refundable once the billing cycle "
-            "has started. Refund requests must be submitted through the "
-            "account billing page."
-        ),
-    },
-    {
-        "id": "shipping-policy.pdf",
-        "text": (
-            "Standard shipping takes 5-7 business days within the country. "
-            "Express shipping takes 1-2 business days and is available at "
-            "checkout for an additional fee. We do not currently ship "
-            "internationally."
-        ),
-    },
-    {
-        "id": "account-security.pdf",
-        "text": (
-            "Users can reset their password from the login page by clicking "
-            "'Forgot password'. Two-factor authentication can be enabled in "
-            "Account Settings > Security. We never ask for your password by "
-            "email or chat."
-        ),
-    },
-    {
-        "id": "product-faq.pdf",
-        "text": (
-            "Our product supports export to CSV and PDF from the reports "
-            "page. Team plans allow up to 10 seats; enterprise plans support "
-            "unlimited seats with SSO. All plans include email support; "
-            "priority chat support is available on Team and Enterprise."
-        ),
-    },
-]
+# NOTE: the generic e-commerce SAMPLE_DOCS placeholder set (refund policy,
+# shipping policy, etc.) has been removed. This bot is scoped to Truelift's
+# real documentation only -- ingest the real doc(s) via ingest_files() or
+# ingest_from_s3(), never a synthetic bootstrap set, so retrieval never
+# competes against or gets diluted by unrelated placeholder content.
 
 # Initialize Qdrant and LlamaIndex Vector Store.
 # Remote server (production) if QDRANT_URL is set; otherwise persistent
@@ -112,9 +78,11 @@ def _add_documents(docs: list[dict]) -> int:
         
     return added
 
-def ingest_documents(docs=None) -> int:
-    """Bootstrap/demo path -- ingests SAMPLE_DOCS unless other docs given."""
-    docs = docs if docs is not None else SAMPLE_DOCS
+def ingest_documents(docs: list[dict]) -> int:
+    """Ingest a batch of docs (list of {"id": ..., "text": ...}). No default
+    sample-doc fallback -- caller must always provide the real docs to
+    ingest, so an empty/misconfigured index never silently gets populated
+    with placeholder content."""
     return _add_documents(docs)
 
 def ingest_files(files: list[tuple[str, bytes]]) -> dict:
@@ -160,22 +128,14 @@ def ingest_from_s3(s3_path: str) -> dict:
 
 def retrieve(query: str, top_k: int = 20):
     """Retrieves chunks using LlamaIndex, mapping back to the expected dict format."""
-    
-    # Lazy load sample docs if the index is empty
-    if not _client.collection_exists(COLLECTION_NAME) or _client.get_collection(COLLECTION_NAME).points_count == 0:
-        ingest_documents() 
-
-    # We now use the LlamaIndex query engine/retriever natively
     retriever = _index.as_retriever(similarity_top_k=top_k)
     query_result = retriever.retrieve(query)
 
-    # Reconstruct the output shape expected by relevance_gate.py
     results = []
     for node in query_result:
         results.append({
-            "source": node.metadata["source"], 
-            "text": node.text, 
+            "source": node.metadata["source"],
+            "text": node.text,
             "score": node.score
         })
-            
     return results

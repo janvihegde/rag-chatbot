@@ -99,8 +99,11 @@ class TestRealGate:
         _patch_model(monkeypatch, [8.0])  # sigmoid(8) ~ 0.9997
         state = {
             "message": "what is the refund policy",
+            # score kept below RAW_SCORE_CONFIDENT_THRESHOLD so this test
+            # actually isolates the reranker-driven (Tier 3) path, rather
+            # than passing via Tier 2's confident-retrieval shortcut.
             "retrieved_chunks": [
-                {"source": "refund-policy.pdf", "text": "refund text", "score": 0.5}
+                {"source": "refund-policy.pdf", "text": "refund text", "score": 0.10}
             ],
         }
         result = relevance_gate_node(state)
@@ -112,8 +115,9 @@ class TestRealGate:
         _patch_model(monkeypatch, [-8.0])  # sigmoid(-8) ~ 0.0003
         state = {
             "message": "what is the refund policy",
+            # score kept below RAW_SCORE_CONFIDENT_THRESHOLD -- see note above.
             "retrieved_chunks": [
-                {"source": "refund-policy.pdf", "text": "unrelated text", "score": 0.5}
+                {"source": "refund-policy.pdf", "text": "unrelated text", "score": 0.10}
             ],
         }
         result = relevance_gate_node(state)
@@ -126,7 +130,8 @@ class TestRealGate:
         _patch_model(monkeypatch, [raw_logit])
         state = {
             "message": "q",
-            "retrieved_chunks": [{"source": "a.pdf", "text": "t", "score": 0.5}],
+            # score kept below RAW_SCORE_CONFIDENT_THRESHOLD -- see note above.
+            "retrieved_chunks": [{"source": "a.pdf", "text": "t", "score": 0.10}],
         }
         result = relevance_gate_node(state)
         assert result["relevance_gate_passed"] is False
@@ -137,7 +142,8 @@ class TestRealGate:
         _patch_model(monkeypatch, [raw_logit])
         state = {
             "message": "q",
-            "retrieved_chunks": [{"source": "a.pdf", "text": "t", "score": 0.5}],
+            # score kept below RAW_SCORE_CONFIDENT_THRESHOLD -- see note above.
+            "retrieved_chunks": [{"source": "a.pdf", "text": "t", "score": 0.10}],
         }
         result = relevance_gate_node(state)
         assert result["relevance_gate_passed"] is True
@@ -166,3 +172,79 @@ class TestRealGate:
 
     def test_rerank_empty_chunks_returns_empty(self):
         assert rerank("q", []) == []
+
+
+class TestConfidentRetrievalTier:
+    """
+    Covers Tier 2 (RAW_SCORE_CONFIDENT_THRESHOLD): a confidently-high raw
+    retrieval score passes the gate directly, even if the cross-encoder
+    itself scores the same chunk poorly. Added after live testing showed
+    the reranker under-scoring genuinely correct matches on this corpus
+    (see relevance_gate.py module docstring for the full explanation).
+    """
+
+    def test_confident_raw_score_passes_despite_bad_rerank_score(self, monkeypatch):
+        from app.relevance_gate import RAW_SCORE_CONFIDENT_THRESHOLD
+
+        _patch_model(monkeypatch, [-9.0])  # reranker strongly disagrees
+        state = {
+            "message": "how do I get pricing",
+            "retrieved_chunks": [
+                {
+                    "source": "Truelift_Doc.pdf",
+                    "text": "onboarding and pricing details",
+                    "score": RAW_SCORE_CONFIDENT_THRESHOLD + 0.05,
+                }
+            ],
+        }
+        result = relevance_gate_node(state)
+        assert result["relevance_gate_passed"] is True
+        assert result["relevance_gate_tier"] == "confident_retrieval"
+        # relevance_score should reflect the RAW retrieval score here, not
+        # the (poor) rerank score, since Tier 2 trusted retrieval directly.
+        assert result["relevance_score"] == RAW_SCORE_CONFIDENT_THRESHOLD + 0.05
+
+    def test_confident_raw_score_still_vetoed_by_catastrophic_rerank_logit(
+        self, monkeypatch
+    ):
+        from app.relevance_gate import (
+            NEGATIVE_LOGIT_VETO,
+            RAW_SCORE_CONFIDENT_THRESHOLD,
+        )
+
+        _patch_model(monkeypatch, [NEGATIVE_LOGIT_VETO - 1.0])
+        state = {
+            "message": "q",
+            "retrieved_chunks": [
+                {
+                    "source": "a.pdf",
+                    "text": "t",
+                    "score": RAW_SCORE_CONFIDENT_THRESHOLD + 0.05,
+                }
+            ],
+        }
+        result = relevance_gate_node(state)
+        # Falls through to Tier 3, where this catastrophically negative
+        # logit's sigmoid score also fails RERANK_GATE_THRESHOLD.
+        assert result["relevance_gate_passed"] is False
+        assert result["relevance_gate_tier"] == "reranker_reject"
+
+    def test_ambiguous_zone_below_confident_threshold_defers_to_reranker(
+        self, monkeypatch
+    ):
+        from app.relevance_gate import RAW_SCORE_CONFIDENT_THRESHOLD
+
+        _patch_model(monkeypatch, [8.0])  # reranker approves
+        state = {
+            "message": "q",
+            "retrieved_chunks": [
+                {
+                    "source": "a.pdf",
+                    "text": "t",
+                    "score": RAW_SCORE_CONFIDENT_THRESHOLD - 0.05,
+                }
+            ],
+        }
+        result = relevance_gate_node(state)
+        assert result["relevance_gate_passed"] is True
+        assert result["relevance_gate_tier"] == "reranker_pass"
