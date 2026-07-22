@@ -7,7 +7,7 @@ import {
   fetchDocuments,
   deleteDocument,
   ingestFiles,
-} from "./adminApi";
+} from "./Adminapi";
 
 const TOKEN_KEY = "truelift_admin_token";
 

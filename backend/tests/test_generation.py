@@ -74,7 +74,7 @@ class TestExtractiveFallback:
 
 
 class TestGenerationNode:
-    def test_response_text_includes_source_line(self):
+    def test_citations_returned_separately_from_response_text(self):
         state = {
             "message": "what is the refund policy",
             "reranked_chunks": [
@@ -86,8 +86,9 @@ class TestGenerationNode:
             ],
         }
         result = generation_node(state)
-        assert "refund-policy.pdf" in result["response_text"]
         assert result["citations"] == ["refund-policy.pdf"]
+        assert "refund-policy.pdf" not in result["response_text"]
+        assert "(Source:" not in result["response_text"]
         assert result["escalated"] is False
 
     def test_no_reranked_chunks_key_handled_gracefully(self):

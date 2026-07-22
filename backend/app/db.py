@@ -27,7 +27,7 @@ def ensure_indexes():
     create_index() is idempotent (a no-op if the index already exists),
     so this is safe to call on every process start.
     """
-    db.messages.create_index([("session_id", ASCENDING), ("timestamp", ASCENDING)])
-    db.sessions.create_index([("user_id", ASCENDING), ("last_active_at", DESCENDING)])
+    db.messages.create_index([("session_id", ASCENDING), ("timestamp_ns", ASCENDING)])
+    db.sessions.create_index([("user_id", ASCENDING), ("last_active_at_ns", DESCENDING)])
     db.sessions.create_index([("session_id", ASCENDING)], unique=True)
     db.documents.create_index([("source", ASCENDING)], unique=True)
