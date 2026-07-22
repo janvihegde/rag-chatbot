@@ -3,23 +3,16 @@ Tests for app/escalation.py.
 
 Covers:
   - escalation_node sets escalated=True, empty citations, and a
-    user-facing fallback message.
-  - The (stubbed) email side-effect fires with the right session_id,
-    message, and relevance_score.
+    user-facing message pointing to a real contact email.
+
+NOTE: escalation logging (a `db.escalations` queue) was intentionally
+removed -- there is no ticket/notification side effect to test here
+anymore. escalation_node is now a pure state transformation.
 """
 from app.escalation import escalation_node
 
 
-def test_escalation_node_sets_expected_state(monkeypatch):
-    sent = {}
-
-    def _fake_send(session_id, message, relevance_score):
-        sent["session_id"] = session_id
-        sent["message"] = message
-        sent["relevance_score"] = relevance_score
-
-    monkeypatch.setattr("app.escalation._log_escalation", _fake_send)
-
+def test_escalation_node_sets_expected_state():
     state = {
         "session_id": "sess_123",
         "message": "what is quantum entanglement in our product",
@@ -29,22 +22,13 @@ def test_escalation_node_sets_expected_state(monkeypatch):
 
     assert result["escalated"] is True
     assert result["citations"] == []
-    assert "forwarded your question" in result["response_text"]
-
-    assert sent["session_id"] == "sess_123"
-    assert sent["message"] == state["message"]
-    assert sent["relevance_score"] == 0.12
+    assert "pratham@truelift.ai" in result["response_text"]
 
 
-def test_escalation_node_defaults_missing_relevance_score(monkeypatch):
-    sent = {}
-    monkeypatch.setattr(
-        "app.escalation._log_escalation",
-        lambda session_id, message, relevance_score: sent.update(
-            relevance_score=relevance_score
-        ),
-    )
-    # relevance_score deliberately absent from state
+def test_escalation_node_works_without_relevance_score():
+    # relevance_score deliberately absent from state -- escalation_node
+    # doesn't depend on it now that there's no log entry to write.
     state = {"session_id": "sess_1", "message": "q"}
-    escalation_node(state)
-    assert sent["relevance_score"] == 0.0
+    result = escalation_node(state)
+    assert result["escalated"] is True
+    assert "pratham@truelift.ai" in result["response_text"]

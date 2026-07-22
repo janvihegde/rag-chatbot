@@ -67,30 +67,19 @@ class TestRejectPaths:
 
 
 class TestEscalationPath:
-    def test_in_scope_but_no_relevant_context_escalates(self, monkeypatch):
+    def test_in_scope_but_no_relevant_context_escalates(self):
         # Retrieval returns chunks, but nothing scoring high enough to
         # pass the relevance gate.
-        monkeypatch.setattr(
-            "app.escalation._log_escalation",
-            lambda session_id, message, relevance_score: emails_sent.append(
-                (session_id, message, relevance_score)
-            ),
-        )
-        emails_sent = []
-        
-
         result = _run("How do I fix a billing error on my account?")
 
         assert result["scope_label"] == "in_scope"
         assert result["relevance_gate_passed"] is False
         assert result["escalated"] is True
         assert result["citations"] == []
-        assert "forwarded your question" in result["response_text"]
-        assert len(emails_sent) == 1  # escalation email actually fired
+        assert "pratham@truelift.ai" in result["response_text"]
 
     def test_empty_retrieval_also_escalates(self, monkeypatch):
         monkeypatch.setattr("app.retrieval.retrieve", lambda query, top_k=20: [])
-        monkeypatch.setattr("app.escalation._log_escalation", lambda **k: None)
 
         result = _run("How do I update my billing address?")
 
@@ -122,9 +111,9 @@ class TestGenerationPath:
         assert result["relevance_gate_passed"] is True
         assert result["escalated"] is False
         assert result["citations"] == ["refund-policy.pdf"]
-        assert "refund-policy.pdf" in result["response_text"]
+        assert "(Source:" not in result["response_text"]
 
-    def test_generation_never_fires_escalation_email(self, monkeypatch):
+    def test_generation_path_never_marks_escalated(self, monkeypatch):
         monkeypatch.setattr(
             "app.retrieval.retrieve",
             lambda query, top_k=20: [
@@ -135,15 +124,10 @@ class TestGenerationPath:
             "app.relevance_gate._get_model",
             lambda: type("M", (), {"predict": staticmethod(lambda pairs: [8.0])})(),
         )
-        email_calls = []
-        monkeypatch.setattr(
-            "app.escalation._log_escalation",
-            lambda **k: email_calls.append(k),
-        )
 
-        _run("How long does shipping take?")
+        result = _run("How long does shipping take?")
 
-        assert email_calls == []
+        assert result["escalated"] is False
 
 
 class TestStatePropagation:
@@ -167,4 +151,4 @@ class TestStatePropagation:
         # No MISTRAL_API_KEY -> extractive fallback, which ignores history,
         # but the node must still run without KeyError and produce output.
         assert result["response_text"]
-        assert result["escalated"] is False
+        assert result["escalated"] is False 

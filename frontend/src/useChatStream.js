@@ -22,7 +22,7 @@ export function useChatStream() {
   const [activeNode, setActiveNode] = useState(null);
   const abortRef = useRef(null);
 
-  const send = useCallback(async (sessionId, message, { onNodeUpdate, onFinal, onError }) => {
+  const send = useCallback(async (sessionId, userId, message, { onNodeUpdate, onFinal, onError }) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -31,7 +31,7 @@ export function useChatStream() {
       const res = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message }),
+        body: JSON.stringify({ session_id: sessionId, user_id: userId, message }),
         signal: controller.signal,
       });
 

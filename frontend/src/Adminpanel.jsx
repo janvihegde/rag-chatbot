@@ -1,13 +1,20 @@
-import { useEffect, useState } from "react";
-import { ArrowLeft, RefreshCw } from "lucide-react";
-import { fetchAnalytics, fetchEscalations } from "./adminApi";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ChevronRight, RefreshCw, Trash2, UploadCloud, Users as UsersIcon, FileText } from "lucide-react";
+import {
+  fetchUsers,
+  fetchUserSessions,
+  fetchSessionMessages,
+  fetchDocuments,
+  deleteDocument,
+  ingestFiles,
+} from "./adminApi";
 
 const TOKEN_KEY = "truelift_admin_token";
 
 function formatTimestamp(iso) {
+  if (!iso) return "";
   try {
-    const d = new Date(iso);
-    return d.toLocaleString(undefined, {
+    return new Date(iso).toLocaleString(undefined, {
       month: "short",
       day: "numeric",
       hour: "2-digit",
@@ -16,66 +23,6 @@ function formatTimestamp(iso) {
   } catch {
     return iso;
   }
-}
-
-// Interpolates between --lift (0% escalation, best case) and --escalate
-// (high escalation, worst case) so the gauge's color itself communicates
-// health at a glance, using the same two semantic colors the chat UI
-// already uses for "answered" vs "escalated".
-function liftColor(escalationRatePercent) {
-  const t = Math.min(Math.max(escalationRatePercent / 50, 0), 1); // 50%+ reads as "worst"
-  const good = [22, 163, 116]; // --lift
-  const bad = [181, 84, 12]; // --escalate
-  const mix = good.map((c, i) => Math.round(c + (bad[i] - c) * t));
-  return `rgb(${mix.join(",")})`;
-}
-
-function LiftGauge({ escalationRatePercent }) {
-  const pct = Math.min(Math.max(escalationRatePercent, 0), 100);
-  const color = liftColor(pct);
-  // Semicircle gauge built as a single SVG arc -- avoids pulling in a
-  // charting library for one shape, and keeps exact control over the
-  // "answered vs escalated" framing that's specific to this product.
-  const radius = 84;
-  const circumference = Math.PI * radius; // half-circle arc length
-  const filled = (pct / 100) * circumference;
-
-  return (
-    <div className="lift-gauge">
-      <svg viewBox="0 0 200 116" className="lift-gauge-svg">
-        <path
-          d="M 16 100 A 84 84 0 0 1 184 100"
-          fill="none"
-          stroke="var(--border)"
-          strokeWidth="14"
-          strokeLinecap="round"
-        />
-        <path
-          d="M 16 100 A 84 84 0 0 1 184 100"
-          fill="none"
-          stroke={color}
-          strokeWidth="14"
-          strokeLinecap="round"
-          strokeDasharray={`${filled} ${circumference}`}
-        />
-      </svg>
-      <div className="lift-gauge-readout">
-        <div className="lift-gauge-value" style={{ color }}>
-          {pct.toFixed(1)}%
-        </div>
-        <div className="lift-gauge-label">of queries escalated</div>
-      </div>
-    </div>
-  );
-}
-
-function StatCard({ label, value }) {
-  return (
-    <div className="stat-card">
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
-    </div>
-  );
 }
 
 function TokenGate({ onUnlock }) {
@@ -92,7 +39,7 @@ function TokenGate({ onUnlock }) {
       // Validate by actually calling an admin endpoint, rather than just
       // storing whatever was typed -- a wrong token should fail here, not
       // silently fail later on the dashboard.
-      await fetchAnalytics(value.trim());
+      await fetchUsers(value.trim());
       localStorage.setItem(TOKEN_KEY, value.trim());
       onUnlock(value.trim());
     } catch (err) {
@@ -106,7 +53,7 @@ function TokenGate({ onUnlock }) {
     <div className="admin-gate-shell">
       <form className="admin-gate-card" onSubmit={handleSubmit}>
         <h1>Admin access</h1>
-        <p>Enter the admin token to view escalations and analytics.</p>
+        <p>Enter the admin token to view users, chats, and documents.</p>
         <input
           type="password"
           value={value}
@@ -123,43 +70,340 @@ function TokenGate({ onUnlock }) {
   );
 }
 
-export default function AdminPanel({ onBackToChat }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
-  const [analytics, setAnalytics] = useState(null);
-  const [escalations, setEscalations] = useState([]);
-  const [statusFilter, setStatusFilter] = useState("pending");
-  const [loading, setLoading] = useState(false);
+function Breadcrumbs({ items }) {
+  return (
+    <div className="admin-breadcrumbs">
+      {items.map((item, i) => (
+        <span key={i} className="admin-breadcrumb-item">
+          {i > 0 && <ChevronRight size={13} className="admin-breadcrumb-sep" />}
+          {item.onClick ? (
+            <button className="text-link-btn" onClick={item.onClick}>
+              {item.label}
+            </button>
+          ) : (
+            <span className="admin-breadcrumb-current">{item.label}</span>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function TranscriptView({ token, session, onBack, onAuthError }) {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const loadData = async (currentToken) => {
+  useEffect(() => {
     setLoading(true);
     setError(null);
+    fetchSessionMessages(token, session.session_id)
+      .then((data) => setMessages(data.messages ?? []))
+      .catch((err) => {
+        if (err.isAuthError) onAuthError();
+        else setError("Couldn't load this conversation.");
+      })
+      .finally(() => setLoading(false));
+  }, [token, session.session_id, onAuthError]);
+
+  return (
+    <div className="admin-panel-body">
+      <Breadcrumbs
+        items={[
+          { label: "Users", onClick: onBack.toUsers },
+          { label: session.userIdShort, onClick: onBack.toSessions },
+          { label: `session:${session.session_id.slice(0, 8)}` },
+        ]}
+      />
+
+      {loading && <div className="admin-empty">Loading transcript…</div>}
+      {error && <div className="admin-error-banner">{error}</div>}
+
+      {!loading && !error && messages.length === 0 && (
+        <div className="admin-empty">No messages in this chat yet.</div>
+      )}
+
+      <div className="transcript-list">
+        {messages.map((m, i) => (
+          <div key={i} className={`transcript-row ${m.role}`}>
+            <div className="transcript-role">{m.role}</div>
+            <div className="transcript-content">{m.content}</div>
+            <div className="transcript-time">{formatTimestamp(m.timestamp)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserSessionsView({ token, userId, onBack, onOpenSession, onAuthError }) {
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    setError(null);
+    fetchUserSessions(token, userId)
+      .then((data) => setSessions(data.sessions ?? []))
+      .catch((err) => {
+        if (err.isAuthError) onAuthError();
+        else setError("Couldn't load this user's chats.");
+      })
+      .finally(() => setLoading(false));
+  }, [token, userId, onAuthError]);
+
+  return (
+    <div className="admin-panel-body">
+      <Breadcrumbs items={[{ label: "Users", onClick: onBack }, { label: userId.slice(0, 12) }]} />
+
+      {loading && <div className="admin-empty">Loading chats…</div>}
+      {error && <div className="admin-error-banner">{error}</div>}
+
+      {!loading && !error && sessions.length === 0 && (
+        <div className="admin-empty">This user has no chats yet.</div>
+      )}
+
+      <div className="admin-list">
+        {sessions.map((s) => (
+          <button
+            key={s.session_id}
+            className="admin-list-row"
+            onClick={() => onOpenSession(s)}
+          >
+            <div className="admin-list-main">
+              <div className="admin-list-title">{s.preview || "New conversation"}</div>
+              <div className="admin-list-meta">
+                <span className="session-tag">session:{s.session_id.slice(0, 8)}</span>
+                <span className="divider">·</span>
+                <span>last active {formatTimestamp(s.last_active_at)}</span>
+              </div>
+            </div>
+            <ChevronRight size={16} className="admin-list-chevron" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UsersView({ token, onOpenUser, onAuthError }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const load = () => {
+    setLoading(true);
+    setError(null);
+    fetchUsers(token)
+      .then((data) => setUsers(data.users ?? []))
+      .catch((err) => {
+        if (err.isAuthError) onAuthError();
+        else setError("Couldn't load users.");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, [token]);
+
+  return (
+    <div className="admin-panel-body">
+      <div className="admin-section-header">
+        <h2>Users</h2>
+        <button className="icon-btn" onClick={load} aria-label="Refresh" disabled={loading}>
+          <RefreshCw size={15} className={loading ? "spin" : ""} />
+        </button>
+      </div>
+
+      {error && <div className="admin-error-banner">{error}</div>}
+      {!loading && !error && users.length === 0 && (
+        <div className="admin-empty">No users have started a chat yet.</div>
+      )}
+
+      <div className="admin-list">
+        {users.map((u) => (
+          <button key={u.user_id} className="admin-list-row" onClick={() => onOpenUser(u.user_id)}>
+            <div className="admin-list-main">
+              <div className="admin-list-title mono">{u.user_id}</div>
+              <div className="admin-list-meta">
+                <span>
+                  {u.session_count} chat{u.session_count === 1 ? "" : "s"}
+                </span>
+                <span className="divider">·</span>
+                <span>last active {formatTimestamp(u.last_active_at)}</span>
+              </div>
+            </div>
+            <ChevronRight size={16} className="admin-list-chevron" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DocumentsView({ token, onAuthError }) {
+  const [documents, setDocuments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [deletingSource, setDeletingSource] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const load = () => {
+    setLoading(true);
+    setError(null);
+    fetchDocuments(token)
+      .then((data) => setDocuments(data.documents ?? []))
+      .catch((err) => {
+        if (err.isAuthError) onAuthError();
+        else setError("Couldn't load documents.");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(load, [token]);
+
+  const handleFilesChosen = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setUploading(true);
+    setUploadError(null);
     try {
-      const [analyticsData, escalationsData] = await Promise.all([
-        fetchAnalytics(currentToken),
-        fetchEscalations(currentToken, statusFilter),
-      ]);
-      setAnalytics(analyticsData.metrics);
-      setEscalations(escalationsData.escalations ?? []);
+      await ingestFiles(token, files);
+      load();
     } catch (err) {
-      if (err.isAuthError) {
-        localStorage.removeItem(TOKEN_KEY);
-        setToken(null);
-      } else {
-        setError("Couldn't load dashboard data. Is the backend running?");
-      }
+      if (err.isAuthError) onAuthError();
+      else setUploadError(err.message || "Upload failed.");
     } finally {
-      setLoading(false);
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  useEffect(() => {
-    if (token) loadData(token);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, statusFilter]);
+  const handleDelete = async (source) => {
+    if (!window.confirm(`Remove "${source}" from the knowledge base? This can't be undone.`)) return;
+    setDeletingSource(source);
+    try {
+      await deleteDocument(token, source);
+      setDocuments((prev) => prev.filter((d) => d.source !== source));
+    } catch (err) {
+      if (err.isAuthError) onAuthError();
+      else setError(`Couldn't delete "${source}".`);
+    } finally {
+      setDeletingSource(null);
+    }
+  };
+
+  return (
+    <div className="admin-panel-body">
+      <div className="admin-section-header">
+        <h2>Documents</h2>
+        <button className="icon-btn" onClick={load} aria-label="Refresh" disabled={loading}>
+          <RefreshCw size={15} className={loading ? "spin" : ""} />
+        </button>
+      </div>
+
+      <label className={`upload-dropzone${uploading ? " uploading" : ""}`}>
+        <UploadCloud size={20} />
+        <div>
+          <div className="upload-dropzone-title">
+            {uploading ? "Uploading…" : "Upload documents"}
+          </div>
+          <div className="upload-dropzone-hint">PDF, HTML, or DOCX -- click to choose files</div>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.html,.htm,.docx"
+          multiple
+          hidden
+          disabled={uploading}
+          onChange={handleFilesChosen}
+        />
+      </label>
+      {uploadError && <div className="admin-error-banner">{uploadError}</div>}
+
+      {error && <div className="admin-error-banner">{error}</div>}
+      {!loading && !error && documents.length === 0 && (
+        <div className="admin-empty">No documents ingested yet.</div>
+      )}
+
+      <div className="admin-list">
+        {documents.map((d) => (
+          <div key={d.source} className="admin-list-row document-row">
+            <div className="admin-list-main">
+              <div className="admin-list-title">{d.source}</div>
+              <div className="admin-list-meta">
+                <span>{d.chunk_count} chunks</span>
+                <span className="divider">·</span>
+                <span>ingested {formatTimestamp(d.ingested_at)}</span>
+              </div>
+            </div>
+            <button
+              className="icon-btn danger"
+              onClick={() => handleDelete(d.source)}
+              disabled={deletingSource === d.source}
+              aria-label={`Delete ${d.source}`}
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function AdminPanel({ onBackToChat }) {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
+  const [tab, setTab] = useState("users"); // users | documents
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [selectedSession, setSelectedSession] = useState(null);
+
+  const handleAuthError = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+  }, []);
 
   if (!token) {
     return <TokenGate onUnlock={setToken} />;
+  }
+
+  const switchTab = (next) => {
+    setTab(next);
+    setSelectedUserId(null);
+    setSelectedSession(null);
+  };
+
+  let usersContent;
+  if (selectedSession) {
+    usersContent = (
+      <TranscriptView
+        token={token}
+        session={{ ...selectedSession, userIdShort: selectedUserId.slice(0, 12) }}
+        onAuthError={handleAuthError}
+        onBack={{
+          toUsers: () => {
+            setSelectedUserId(null);
+            setSelectedSession(null);
+          },
+          toSessions: () => setSelectedSession(null),
+        }}
+      />
+    );
+  } else if (selectedUserId) {
+    usersContent = (
+      <UserSessionsView
+        token={token}
+        userId={selectedUserId}
+        onBack={() => setSelectedUserId(null)}
+        onOpenSession={setSelectedSession}
+        onAuthError={handleAuthError}
+      />
+    );
+  } else {
+    usersContent = <UsersView token={token} onOpenUser={setSelectedUserId} onAuthError={handleAuthError} />;
   }
 
   return (
@@ -172,76 +416,26 @@ export default function AdminPanel({ onBackToChat }) {
             </button>
             <div>
               <div className="brand-name">Admin dashboard</div>
-              <div className="brand-subtitle">escalations &amp; analytics</div>
+              <div className="brand-subtitle">users, chats &amp; documents</div>
             </div>
           </div>
-          <button
-            className="icon-btn"
-            onClick={() => loadData(token)}
-            aria-label="Refresh"
-            disabled={loading}
-          >
-            <RefreshCw size={16} className={loading ? "spin" : ""} />
-          </button>
+          <div className="admin-tabs">
+            <button
+              className={`admin-tab${tab === "users" ? " active" : ""}`}
+              onClick={() => switchTab("users")}
+            >
+              <UsersIcon size={14} /> Users
+            </button>
+            <button
+              className={`admin-tab${tab === "documents" ? " active" : ""}`}
+              onClick={() => switchTab("documents")}
+            >
+              <FileText size={14} /> Documents
+            </button>
+          </div>
         </header>
 
-        <div className="admin-body">
-          {error && <div className="admin-error-banner">{error}</div>}
-
-          {analytics && (
-            <section className="gauge-section">
-              <LiftGauge escalationRatePercent={analytics.escalation_rate_percent} />
-              <div className="stat-row">
-                <StatCard label="Total queries" value={analytics.total_user_queries} />
-                <StatCard label="Total escalations" value={analytics.total_escalations} />
-                <StatCard label="Pending" value={analytics.pending_escalations} />
-              </div>
-            </section>
-          )}
-
-          <section className="escalation-section">
-            <div className="escalation-header">
-              <h2>Escalation queue</h2>
-              <div className="status-tabs">
-                {["pending", "resolved"].map((s) => (
-                  <button
-                    key={s}
-                    className={`status-tab${statusFilter === s ? " active" : ""}`}
-                    onClick={() => setStatusFilter(s)}
-                  >
-                    {s === "pending" ? "Pending" : "Resolved"}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {escalations.length === 0 && !loading && (
-              <div className="empty-state small">
-                <p>No {statusFilter} escalations right now.</p>
-              </div>
-            )}
-
-            <div className="escalation-list">
-              {escalations.map((esc) => (
-                <div key={esc._id} className="escalation-row">
-                  <div className="escalation-main">
-                    <div className="escalation-message">{esc.user_message}</div>
-                    <div className="escalation-meta">
-                      <span className="session-tag">
-                        session:{esc.session_id?.slice(0, 8)}
-                      </span>
-                      <span className="divider">·</span>
-                      <span>{formatTimestamp(esc.timestamp)}</span>
-                      <span className="divider">·</span>
-                      <span>relevance {(esc.relevance_score ?? 0).toFixed(4)}</span>
-                    </div>
-                  </div>
-                  <span className={`status-pill ${esc.status}`}>{esc.status}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
+        {tab === "users" ? usersContent : <DocumentsView token={token} onAuthError={handleAuthError} />}
       </div>
     </div>
   );

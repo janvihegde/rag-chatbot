@@ -58,8 +58,39 @@ class _FakeQdrantClient:
     def get_collection(self, name):
         return types.SimpleNamespace(points_count=0)
 
+    def delete(self, collection_name=None, points_selector=None, **kwargs):
+        # Real behavior asserted via ingest.py's own tests, which patch
+        # this at a higher level; this stub just needs to exist so
+        # module-level imports don't fail.
+        return None
+
 
 _stub_module("qdrant_client", QdrantClient=_FakeQdrantClient)
+
+
+# ---- qdrant_client.models (Filter, FieldCondition, MatchValue) --------
+class _FakeFilter:
+    def __init__(self, must=None, **kwargs):
+        self.must = must
+
+
+class _FakeFieldCondition:
+    def __init__(self, key=None, match=None, **kwargs):
+        self.key = key
+        self.match = match
+
+
+class _FakeMatchValue:
+    def __init__(self, value=None, **kwargs):
+        self.value = value
+
+
+_stub_module(
+    "qdrant_client.models",
+    Filter=_FakeFilter,
+    FieldCondition=_FakeFieldCondition,
+    MatchValue=_FakeMatchValue,
+)
 
 
 # ---- llama_index.core (VectorStoreIndex, Settings) --------------------

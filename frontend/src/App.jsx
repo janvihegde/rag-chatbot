@@ -1,16 +1,35 @@
-import { useEffect, useRef, useState } from "react";
-import { Send } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { MessageSquare, Plus, Send, Settings } from "lucide-react";
 import { API_BASE_URL } from "./config";
 import { useChatStream, PIPELINE_STEPS } from "./useChatStream";
+import AdminPanel from "./Adminpanel";
 
-function getOrCreateSessionId() {
-  const key = "truelift_session_id";
-  let id = localStorage.getItem(key);
+const USER_ID_KEY = "truelift_user_id";
+
+// Persistent anonymous identity for this browser -- separate from
+// session_id, which identifies a single chat. One user_id can own many
+// sessions (see backend/app/main.py's NOTE on identity).
+function getOrCreateUserId() {
+  let id = localStorage.getItem(USER_ID_KEY);
   if (!id) {
     id = crypto.randomUUID();
-    localStorage.setItem(key, id);
+    localStorage.setItem(USER_ID_KEY, id);
   }
   return id;
+}
+
+function formatTimestamp(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
 
 // The backend appends a trailing "(Source: ..., ...)" line to grounded
@@ -63,8 +82,53 @@ function PipelineStatus({ node }) {
   );
 }
 
-export default function App() {
-  const [sessionId] = useState(getOrCreateSessionId);
+function SessionPicker({ sessions, creating, onSelect, onNew }) {
+  return (
+    <div className="app-shell">
+      <div className="chat-column">
+        <header className="chat-header">
+          <div className="brand-mark">
+            <span className="status-dot" />
+            <div>
+              <div className="brand-name">Truelift Assistant</div>
+              <div className="brand-subtitle">product &amp; support</div>
+            </div>
+          </div>
+        </header>
+
+        <div className="picker-body">
+          <h2>Welcome back</h2>
+          <p>Continue a previous conversation, or start a new one.</p>
+
+          <button className="new-chat-btn" onClick={onNew} disabled={creating}>
+            <Plus size={16} />
+            {creating ? "Starting…" : "Start a new chat"}
+          </button>
+
+          <div className="session-picker-list">
+            {sessions.map((s) => (
+              <button
+                key={s.session_id}
+                className="session-picker-item"
+                onClick={() => onSelect(s.session_id)}
+              >
+                <MessageSquare size={15} className="session-picker-icon" />
+                <div className="session-picker-text">
+                  <div className="session-picker-preview">
+                    {s.preview || "New conversation"}
+                  </div>
+                  <div className="session-picker-meta">{formatTimestamp(s.last_active_at)}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatView({ userId, sessionId, onSwitchChat, onOpenAdmin }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -72,9 +136,12 @@ export default function App() {
   const listEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  // Load prior history for this session on first mount (so a refresh
-  // doesn't lose the conversation -- the backend already persists it).
+  // Load prior history whenever the active session changes (first mount,
+  // switching to a previous chat, or starting a new one) so a refresh or
+  // a chat switch doesn't lose the conversation -- the backend already
+  // persists it.
   useEffect(() => {
+    setMessages([]);
     fetch(`${API_BASE_URL}/api/chat/${sessionId}/history`)
       .then((r) => r.json())
       .then((data) => {
@@ -87,8 +154,7 @@ export default function App() {
       .catch(() => {
         // History is a nice-to-have; a fresh empty conversation is a fine fallback.
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -103,9 +169,8 @@ export default function App() {
     setIsSending(true);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    send(sessionId, text, {
+    send(sessionId, userId, text, {
       onFinal: (payload) => {
-        console.log("Final payload:", payload);
         setMessages((prev) => [
           ...prev,
           {
@@ -158,7 +223,15 @@ export default function App() {
               <div className="brand-subtitle">product &amp; support</div>
             </div>
           </div>
-          <span className="session-tag">session:{sessionId.slice(0, 8)}</span>
+          <div className="header-actions">
+            <button className="text-link-btn" onClick={onSwitchChat}>
+              Switch chat
+            </button>
+            <span className="session-tag">session:{sessionId.slice(0, 8)}</span>
+            <button className="icon-btn" onClick={onOpenAdmin} aria-label="Admin dashboard">
+              <Settings size={16} />
+            </button>
+          </div>
         </header>
 
         <div className="message-list">
@@ -206,4 +279,117 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function LoadingSplash() {
+  return (
+    <div className="app-shell">
+      <div className="chat-column">
+        <div className="loading-splash">
+          <span className="spinner" aria-hidden="true" />
+          <span>Loading…</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatApp() {
+  const [userId] = useState(getOrCreateUserId);
+  const [phase, setPhase] = useState("loading"); // loading | picker | chat
+  const [sessions, setSessions] = useState([]);
+  const [sessionId, setSessionId] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  const startNewChat = useCallback(() => {
+    setCreating(true);
+    fetch(`${API_BASE_URL}/api/users/${userId}/sessions`, { method: "POST" })
+      .then((r) => r.json())
+      .then((data) => {
+        setSessionId(data.session_id);
+        setPhase("chat");
+      })
+      .catch(() => {
+        // Backend unreachable -- fall back to a client-generated id so the
+        // person can still use the chat UI; history just won't persist.
+        setSessionId(crypto.randomUUID());
+        setPhase("chat");
+      })
+      .finally(() => setCreating(false));
+  }, [userId]);
+
+  const loadSessions = useCallback(() => {
+    setPhase("loading");
+    fetch(`${API_BASE_URL}/api/users/${userId}/sessions`)
+      .then((r) => r.json())
+      .then((data) => {
+        const list = data.sessions ?? [];
+        if (list.length === 0) {
+          startNewChat();
+        } else {
+          setSessions(list);
+          setPhase("picker");
+        }
+      })
+      .catch(() => {
+        setSessionId(crypto.randomUUID());
+        setPhase("chat");
+      });
+  }, [userId, startNewChat]);
+
+  useEffect(() => {
+    loadSessions();
+    // Only run once on mount -- switching chats later is triggered
+    // explicitly via onSwitchChat, not by this effect re-running.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (phase === "loading") return <LoadingSplash />;
+
+  if (phase === "picker") {
+    return (
+      <SessionPicker
+        sessions={sessions}
+        creating={creating}
+        onSelect={(id) => {
+          setSessionId(id);
+          setPhase("chat");
+        }}
+        onNew={startNewChat}
+      />
+    );
+  }
+
+  return (
+    <ChatView
+      userId={userId}
+      sessionId={sessionId}
+      onSwitchChat={loadSessions}
+      onOpenAdmin={() => {
+        window.location.hash = "admin";
+      }}
+    />
+  );
+}
+
+export default function App() {
+  const [route, setRoute] = useState(() => (window.location.hash === "#admin" ? "admin" : "app"));
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(window.location.hash === "#admin" ? "admin" : "app");
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  if (route === "admin") {
+    return (
+      <AdminPanel
+        onBackToChat={() => {
+          window.location.hash = "";
+        }}
+      />
+    );
+  }
+
+  return <ChatApp />;
 }

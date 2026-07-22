@@ -16,7 +16,25 @@ services:
       - mongo_storage:/data/db   # persists conversation history & escalations across restarts
     restart: unless-stopped
 
+  # The 'full' profile means this service is SKIPPED by a plain
+  # `docker compose up -d` -- that command only starts qdrant + mongo,
+  # the two services you virtually always want running as background
+  # dependencies regardless of whether the backend itself runs in Docker
+  # or locally.
+  #
+  # Run the backend in Docker (full containerized stack):
+  #     docker compose --profile full up -d --build
+  #
+  # Run the backend locally instead (recommended for active development --
+  # no rebuild needed per code change, just `uvicorn --reload`):
+  #     docker compose up -d                 # starts qdrant + mongo only
+  #     cd backend && ./run_local.sh          # or run_local.ps1 on Windows
+  #
+  # This split exists specifically so both workflows can't accidentally
+  # collide on port 8000 -- the containerized backend only ever starts
+  # when you explicitly ask for the 'full' profile.
   backend:
+    profiles: ["full"]
     build:
       context: ./backend
     ports:
@@ -26,11 +44,6 @@ services:
       - MONGO_URI=mongodb://mongo:27017
       - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
-      - AWS_REGION=${AWS_REGION:-us-east-1}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      - SES_SENDER_EMAIL=${SES_SENDER_EMAIL:-}
-      - SES_RECIPIENT_EMAIL=${SES_RECIPIENT_EMAIL:-}
     volumes:
       - hf_cache:/root/.cache/huggingface   # persists the ~2GB BGE-M3 download across rebuilds
     depends_on:
